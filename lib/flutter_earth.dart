@@ -25,22 +25,29 @@ Offset latLonToPoint(double latitude, double longitude) {
 
 LatLon pointToLatLon(double x, double y) {
   final longitude = (x - 0.5) * (2.0 * math.pi);
-  final latitude = 2 * math.atan(math.exp(math.pi - 2 * math.pi * y)) - math.pi / 2;
+  final latitude = 2.0 * math.atan(math.exp(math.pi - 2.0 * math.pi * y)) - math.pi / 2.0;
   return LatLon(latitude, longitude);
 }
 
-LatLon quaternionToLatLon(Quaternion q) {
-  var v = Vector3(0, 1, 0);
-  q.rotate(v);
-  final lat = -math.asin(v.z);
-  final ysign = v.y.sign;
+/// Cartesian coordinates
+Vector3 latLonToVector3(LatLon latLon) {
+  final x = math.cos(latLon.latitude) * math.cos(latLon.longitude);
+  final y = math.cos(latLon.latitude) * math.sin(latLon.longitude);
+  final z = math.sin(latLon.latitude);
+  return Vector3(x, y, z);
+}
 
-  v = Vector3(1, 0, 0);
-  q.rotate(v);
-  var lon = (math.atan2(v.z, v.x) - math.pi / 2) % (2 * math.pi) - math.pi;
-  if (ysign > 0) lon = -lon;
-
+LatLon vector3ToLatLon(Vector3 v) {
+  final lat = math.asin(v.z);
+  var lon = math.atan2(v.y, v.x);
   return LatLon(lat, lon);
+}
+
+LatLon quaternionToLatLon(Quaternion q) {
+  final v = Vector3(0, 0, -1.0);
+  q.inverted().rotate(v);
+  v.normalize();
+  return LatLon(math.asin(v.z), math.atan2(v.y, v.x));
 }
 
 class LatLon {
@@ -139,32 +146,13 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
   final int maxZoom = 21;
   List<HashMap<int, Tile>> tiles;
 
-  Vector3 latLonToVector3(LatLon latLon, double radius) {
-    final x = radius * math.cos(latLon.latitude) * math.cos(latLon.longitude);
-    final y = radius * math.cos(latLon.latitude) * math.sin(latLon.longitude);
-    final z = radius * math.sin(latLon.latitude);
-    return Vector3(x, z, y);
-  }
-
-  LatLon vector3ToLatLon(Vector3 v) {
-    final lat = -math.asin(v.y / radius);
-    var lon = math.atan2(v.z, v.x);
-
-    var v0 = Vector3(0, 1, 0);
-    quaternion.rotate(v0);
-    final ysign = v0.y.sign;
-
-    if (ysign > 0) lon = -((lon + math.pi * 2) % (2 * math.pi) - math.pi);
-    return LatLon(lat, lon);
-  }
-
   Vector3 canvasPointToVector3(Offset point) {
     final x = point.dx - width / 2;
     final y = point.dy - height / 2;
     var z = radius * radius - x * x - y * y;
     if (z < 0) z = 0;
     z = -math.sqrt(z);
-    return Vector3(x, -y, z);
+    return Vector3(x, y, z);
   }
 
   String getTileURL(int x, int y, int z) {
@@ -225,7 +213,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
       final x0 = (x + p.dx) / scale;
       final y0 = (y + p.dy) / scale;
       var latLon = pointToLatLon(x0, y0);
-      final v = latLonToVector3(latLon, radius);
+      final v = latLonToVector3(latLon)..scale(radius);
       quaternion.rotate(v);
 
       if (bounds.contains(Offset(v.x, v.y))) return true;
@@ -259,7 +247,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
               continue;
             }
             final latlng = pointToLatLon((x1 + 0.5) / scale, (y1 + 0.5) / scale);
-            final v = latLonToVector3(latlng, radius);
+            final v = latLonToVector3(latlng)..scale(radius);
             quaternion.rotate(v);
             // if (v.z >= 0)
             if (tileObservable(x1.toInt(), y1.toInt(), bounds)) {
@@ -288,7 +276,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
       for (var i = 0; i <= subdivisions; i++) {
         final x0 = (offset.dx + tileWidth * i / subdivisions) / width;
         var latLon = pointToLatLon(x0, y0);
-        final v = latLonToVector3(latLon, radius);
+        final v = latLonToVector3(latLon)..scale(radius);
         quaternion.rotate(v);
         positions.add(v);
         textureCoordinates.add(Offset(tileWidth * i / subdivisions, tileHeight * j / subdivisions));
@@ -350,11 +338,11 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     triangles.sort((Triangle a, Triangle b) {
       final az = positions3[a.point0].z + positions3[a.point1].z + positions3[a.point2].z;
       final bz = positions3[b.point0].z + positions3[b.point1].z + positions3[b.point2].z;
-      return az.compareTo(bz);
+      return bz.compareTo(az);
     });
 
     for (var v in positions3) {
-      positions.add(Offset(v.x, -v.y));
+      positions.add(Offset(v.x, v.y));
     }
 
     final indices = List<int>();
@@ -399,7 +387,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
       final indices = List<int>();
 
       for (var p in mesh.positions) {
-        positions.add(Offset(p.x, -p.y));
+        positions.add(Offset(p.x, p.y));
       }
 
       for (var t in mesh.triangleIndices) {
@@ -465,9 +453,9 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
 
     final offset = details.focalPoint - _lastFocalPoint;
     q = Quaternion.axisAngle(Vector3(0, 1.0, 0), offset.dx / radius);
-    q *= Quaternion.axisAngle(Vector3(1.0, 0, 0), offset.dy / radius);
+    q *= Quaternion.axisAngle(Vector3(1.0, 0, 0), -offset.dy / radius);
 
-    q *= Quaternion.axisAngle(Vector3(0, 0, 1.0), details.rotation);
+    q *= Quaternion.axisAngle(Vector3(0, 0, 1.0), -details.rotation);
     quaternion = _lastQuaternion * q; //quaternion A * B is not equal to B * A
 
     _updateInfo();
