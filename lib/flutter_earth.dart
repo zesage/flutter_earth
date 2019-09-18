@@ -29,7 +29,7 @@ LatLon pointToLatLon(double x, double y) {
   return LatLon(latitude, longitude);
 }
 
-/// Cartesian coordinates
+/// Cartesian coordinate conversions
 Vector3 latLonToVector3(LatLon latLon) {
   final x = math.cos(latLon.latitude) * math.cos(latLon.longitude);
   final y = math.cos(latLon.latitude) * math.sin(latLon.longitude);
@@ -43,11 +43,57 @@ LatLon vector3ToLatLon(Vector3 v) {
   return LatLon(lat, lon);
 }
 
+/// Quaternion conversions
 LatLon quaternionToLatLon(Quaternion q) {
   final v = Vector3(0, 0, -1.0);
   q.inverted().rotate(v);
   v.normalize();
   return LatLon(math.asin(v.z), math.atan2(v.y, v.x));
+}
+
+/// Fixed Quaternion.setFromTwoVectors from 'vector_math_64/quaternion.dart'. 0.0005 is too big?
+Quaternion quaternionFromTwoVectors(Vector3 a, Vector3 b) {
+  final Vector3 v1 = a.normalized();
+  final Vector3 v2 = b.normalized();
+
+  final double c = v1.dot(v2);
+  double angle = math.acos(c);
+  Vector3 axis = v1.cross(v2);
+
+  if ((1.0 + c).abs() < 0.000000000000005) {
+    // c \approx -1 indicates 180 degree rotation
+    angle = math.pi;
+
+    // a and b are parallel in opposite directions. We need any
+    // vector as our rotation axis that is perpendicular.
+    // Find one by taking the cross product of v1 with an appropriate unit axis
+    if (v1.x > v1.y && v1.x > v1.z) {
+      // v1 points in a dominantly x direction, so don't cross with that axis
+      axis = v1.cross(new Vector3(0.0, 1.0, 0.0));
+    } else {
+      // Predominantly points in some other direction, so x-axis should be safe
+      axis = v1.cross(new Vector3(1.0, 0.0, 0.0));
+    }
+  } else if ((1.0 - c).abs() < 0.000000000000005) {
+    // c \approx 1 is 0-degree rotation, axis is arbitrary
+    angle = 0.0;
+    axis = new Vector3(1.0, 0.0, 0.0);
+  }
+
+  return Quaternion.axisAngle(axis.normalized(), angle);
+}
+
+/// Fixed Quaternion.axis from 'vector_math_64/quaternion.dart'. 0.0005 is too big?
+Vector3 axisFromQuaternion(Quaternion q) {
+  final _qStorage = q.storage;
+  final double den = 1.0 - (_qStorage[3] * _qStorage[3]);
+  if (den < 0.000000000000005) {
+    // 0-angle rotation, so axis does not matter
+    return new Vector3.zero();
+  }
+
+  final double scale = 1.0 / math.sqrt(den);
+  return new Vector3(_qStorage[0] * scale, _qStorage[1] * scale, _qStorage[2] * scale);
 }
 
 class LatLon {
@@ -124,18 +170,15 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
   double zoom;
   double _lastZoom;
   Offset _lastFocalPoint;
+  Quaternion _lastQuaternion;
+  Vector3 _lastRotationAxis;
 
   final double _radius = 256 / (2 * math.pi);
   double get radius => _radius * math.pow(2, zoom);
   int get zoomLevel => zoom.round().clamp(0, maxZoom);
-  List<Vector3> vertices;
-  List<Offset> textureCoordinates;
   Quaternion quaternion = Quaternion.identity();
-  Quaternion _lastQuaternion;
-  AnimationController rotationXController;
-  Animation<double> rotationXAnimation;
-  AnimationController rotationYController;
-  Animation<double> rotationYAnimation;
+  AnimationController rotationController;
+  Animation<double> rotationAnimation;
   AnimationController zoomController;
   Animation<double> zoomAnimation;
 
@@ -435,8 +478,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
   }
 
   void _handleScaleStart(ScaleStartDetails details) {
-    rotationXController.stop();
-    rotationXController.stop();
+    rotationController.stop();
     _lastZoom = zoom;
     _lastFocalPoint = details.focalPoint;
     _lastQuaternion = quaternion;
@@ -445,15 +487,14 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
   void _handleScaleUpdate(ScaleUpdateDetails details) {
     zoom = _lastZoom + math.log(details.scale) / math.ln2;
 
-    Quaternion q;
-    // final RenderBox box = context.findRenderObject();
-    // final oldCoord = canvasPointToVector3(box.globalToLocal(_lastFocalPoint));
-    // final newCoord = canvasPointToVector3(box.globalToLocal(details.focalPoint));
-    // q = Quaternion.fromTwoVectors(newCoord, oldCoord);
-
-    final offset = details.focalPoint - _lastFocalPoint;
-    q = Quaternion.axisAngle(Vector3(0, 1.0, 0), offset.dx / radius);
-    q *= Quaternion.axisAngle(Vector3(1.0, 0, 0), -offset.dy / radius);
+    final RenderBox box = context.findRenderObject();
+    final oldCoord = canvasPointToVector3(box.globalToLocal(_lastFocalPoint));
+    final newCoord = canvasPointToVector3(box.globalToLocal(details.focalPoint));
+    //var q = Quaternion.fromTwoVectors(newCoord, oldCoord); // It seems some issues with this 'fromTwoVectors' function.
+    var q = quaternionFromTwoVectors(newCoord, oldCoord);
+    // final axis = q.axis; // It seems some issues with this 'axis' function.
+    final axis = axisFromQuaternion(q);
+    if (axis.x != 0 && axis.y != 0 && axis.z != 0) _lastRotationAxis = axis;
 
     q *= Quaternion.axisAngle(Vector3(0, 0, 1.0), -details.rotation);
     quaternion = _lastQuaternion * q; //quaternion A * B is not equal to B * A
@@ -464,29 +505,20 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
 
   void _handleScaleEnd(ScaleEndDetails details) {
     _lastQuaternion = quaternion;
-    final a = -300;
-    var v = details.velocity.pixelsPerSecond.dx * 0.3;
+    final a = -600;
+    var v = details.velocity.pixelsPerSecond.distance * 0.3;
     var t = (v / a).abs() * 1000;
     var s = (v.sign * 0.5 * v * v / a) / radius;
-    rotationXController.duration = Duration(milliseconds: t.toInt());
-    rotationXAnimation = Tween<double>(begin: 0, end: -s).animate(CurveTween(curve: Curves.decelerate).animate(rotationXController));
-    rotationXController
+    rotationController.duration = Duration(milliseconds: t.toInt());
+    rotationAnimation = Tween<double>(begin: 0, end: -s).animate(CurveTween(curve: Curves.decelerate).animate(rotationController));
+    rotationController
       ..value = 0
       ..forward();
-
-    // v = details.velocity.pixelsPerSecond.dy * 0.3;
-    // t = (v / a).abs() * 1000;
-    // s = (v.sign * 0.5 * v * v / a) / radius;
-    // rotationYController.duration = Duration(milliseconds: t.toInt());
-    // rotationYAnimation = Tween<double>(begin: 0, end: -s).animate(CurveTween(curve: Curves.decelerate).animate(rotationYController));
-    // rotationYController
-    //   ..value = 0
-    //   ..forward();
   }
 
   void _handleDoubleTap() {
     _lastZoom = zoom;
-    zoomController.duration = Duration(milliseconds: 1000);
+    zoomController.duration = Duration(milliseconds: 600);
     zoomAnimation = Tween<double>(begin: 0, end: 1).animate(zoomController);
     zoomController
       ..value = 0
@@ -500,17 +532,10 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     for (var i = 0; i <= maxZoom; i++) tiles[i] = HashMap<int, Tile>();
 
     zoom = math.log(widget.radius / _radius) / math.ln2;
-    rotationXController = AnimationController(vsync: this)
+    rotationController = AnimationController(vsync: this)
       ..addListener(() {
         setState(() {
-          final q = Quaternion.axisAngle(Vector3(0, 1.0, 0), rotationXAnimation.value);
-          quaternion = _lastQuaternion * q;
-        });
-      });
-    rotationYController = AnimationController(vsync: this)
-      ..addListener(() {
-        setState(() {
-          final q = Quaternion.axisAngle(Vector3(0, 1.0, 0), rotationYAnimation.value);
+          final q = Quaternion.axisAngle(_lastRotationAxis, rotationAnimation.value);
           quaternion = _lastQuaternion * q;
         });
       });
@@ -528,8 +553,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
 
   @override
   void dispose() {
-    rotationXController.dispose();
-    rotationYController.dispose();
+    rotationController.dispose();
     zoomController.dispose();
     super.dispose();
   }
@@ -569,11 +593,11 @@ class SpherePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    var stopwatch = Stopwatch()..start();
+    // var stopwatch = Stopwatch()..start();
     canvas.translate(size.width / 2, size.height / 2);
     state.drawTiles(canvas, size);
-    stopwatch.stop();
-    print('paint() executed in ${stopwatch.elapsed.inMilliseconds}');
+    // stopwatch.stop();
+    // print('paint() executed in ${stopwatch.elapsed.inMilliseconds}');
   }
 
   // We should repaint whenever the board changes, such as board.selected.
