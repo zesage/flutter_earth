@@ -224,6 +224,13 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     return Vector3(x, y, z);
   }
 
+  LatLon canvasVector3ToLatLon(Vector3 v) {
+    final q = Quaternion(-0.5, -0.5, 0.5, 0.5) * quaternion;
+    q.inverted().rotate(v);
+    v.normalize();
+    return vector3ToLatLon(v);
+  }
+
   String getTileURL(int x, int y, int z) {
     return widget.url.replaceAll('{z}', '$z').replaceAll('{x}', '$x').replaceAll('{y}', '$y');
   }
@@ -275,78 +282,56 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     return tile;
   }
 
-  bool tileObservable(int x, int y, Rect bounds) {
-    final scale = math.pow(2.0, zoomLevel);
-    final points = [Offset(0, 0), Offset(0, 1), Offset(1, 1), Offset(1, 0), Offset(0, 0.5), Offset(0.5, 1), Offset(1, 0.5), Offset(0.5, 0.5)];
-    for (var p in points) {
-      final x0 = (x + p.dx) / scale;
-      final y0 = (y + p.dy) / scale;
-      var latLon = pointToLatLon(x0, y0);
-      final v = latLonToVector3(latLon)..scale(radius);
-      quaternion.rotate(v);
-
-      if (bounds.contains(Offset(v.x, v.y))) return true;
-    }
-    return false;
-  }
-
-  List<Offset> clipTiles(double visibleWidth, double visibleHeight, double radius) {
+  List<Offset> clipTiles(Rect clipRect, double radius) {
     final list = List<Offset>();
     final scale = math.pow(2.0, zoomLevel);
-    final latlon = quaternionToLatLon(quaternion);
-    final point = latLonToPoint(latlon.latitude, latlon.longitude) * scale;
-    final x0 = point.dx.toInt();
-    final y0 = point.dy.toInt();
-    final bounds = Rect.fromLTWH(-visibleWidth / 2, -visibleHeight / 2, visibleWidth, visibleHeight);
-    final maxK = 10;
-    final observed = HashMap<int, int>();
-
-    for (var k = 0; k < scale; k++) {
-      for (var y = y0 - k; y <= y0 + k; y++) {
-        for (var x = x0 - k; x <= x0 + k; x++) {
-          if (x == x0 - k || x == x0 + k || y == y0 - k || y == y0 + k) {
-            var x1 = x.toDouble();
-            if (x1 >= scale) x1 %= scale;
-            if (x1 < 0) x1 = scale - (-x1) % scale;
-            var y1 = y.toDouble();
-            if (y1 >= scale) y1 %= scale;
-            if (y1 < 0) y1 = scale - (-y1) % scale;
-
-            if (x1 < 0 || y1 < 0 || x1 >= scale || y1 >= scale) {
-              continue;
-            }
-            final latlng = pointToLatLon((x1 + 0.5) / scale, (y1 + 0.5) / scale);
-            final v = latLonToVector3(latlng)..scale(radius);
-            quaternion.rotate(v);
-            // if (v.z >= 0)
-            if (tileObservable(x1.toInt(), y1.toInt(), bounds)) {
-              final key = (x1.toInt() << 32) + y1.toInt();
-              if (!observed.containsKey(key)) {
-                observed[key] = 0;
-                list.add(Offset(x1.toDouble(), y1.toDouble()));
-              }
-            }
-          }
+    if (zoomLevel <= 2) {
+      for (double y = 0; y < scale; y++) {
+        for (double x = 0; x < scale; x++) {
+          list.add(Offset(x, y));
         }
       }
-      if (k > maxK) break;
+      return list;
+    }
+
+    final observed = HashMap<int, int>();
+    final lastKeys = List<int>(clipRect.width ~/ 10 + 1);
+    for (var y = clipRect.top; y < clipRect.bottom; y += 10.0) {
+      var i = 0;
+      for (var x = clipRect.left; x < clipRect.right; x += 10.0) {
+        final v = canvasPointToVector3(Offset(x, y));
+        final latLon = canvasVector3ToLatLon(v);
+        final point = latLonToPoint(latLon.latitude, latLon.longitude) * scale;
+        final key = (point.dx.toInt() << 32) + point.dy.toInt();
+        if ((i == 0 || lastKeys[i - 1] != key) && (lastKeys[i] != key) && !observed.containsKey(key)) {
+          observed[key] = 0;
+          list.add(Offset(point.dx.truncateToDouble(), point.dy.truncateToDouble()));
+        }
+        lastKeys[i] = key;
+        i++;
+      }
     }
     return list;
   }
 
-  Mesh buildTileMesh(Offset offset, double tileWidth, double tileHeight, int subdivisions, double width, double height, double radius) {
+  Mesh buildTileMesh(Offset offset, double tileWidth, double tileHeight, int subdivisions, double mapWidth, double mapHeight, double radius) {
     final positions = List<Vector3>();
     final textureCoordinates = List<Offset>();
     final triangleIndices = List<Triangle>();
     var sumOfZ = 0.0;
+    //Rotate the tile from initial LatLon(-90, -90) to LatLon(0, 0) first.
+    final q = Quaternion(-0.5, -0.5, 0.5, 0.5) * quaternion;
+    //Use matrix rotation is more efficient.
+    final matrix = q.asRotationMatrix()..invert();
 
     for (var j = 0; j <= subdivisions; j++) {
-      final y0 = (offset.dy + tileHeight * j / subdivisions) / height;
+      final y0 = (offset.dy + tileHeight * j / subdivisions) / mapHeight;
       for (var i = 0; i <= subdivisions; i++) {
-        final x0 = (offset.dx + tileWidth * i / subdivisions) / width;
-        var latLon = pointToLatLon(x0, y0);
+        final x0 = (offset.dx + tileWidth * i / subdivisions) / mapWidth;
+        final latLon = pointToLatLon(x0, y0);
         final v = latLonToVector3(latLon)..scale(radius);
-        quaternion.rotate(v);
+        v.applyMatrix3(matrix);
+        // q.rotate(v);
         positions.add(v);
         textureCoordinates.add(Offset(tileWidth * i / subdivisions, tileHeight * j / subdivisions));
         sumOfZ += v.z;
@@ -429,7 +414,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
   }
 
   void drawTiles(Canvas canvas, Size size) {
-    final tiles = clipTiles(width, height, radius);
+    final tiles = clipTiles(Rect.fromLTWH(0, 0, width, height), radius);
     final meshList = List<Mesh>();
     final maxWidth = tileWidth * (1 << zoomLevel);
     final maxHeight = tileHeight * (1 << zoomLevel);
