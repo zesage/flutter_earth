@@ -45,55 +45,81 @@ LatLon vector3ToLatLon(Vector3 v) {
 
 /// Quaternion conversions
 LatLon quaternionToLatLon(Quaternion q) {
-  final v = Vector3(0, 0, -1.0);
-  q.inverted().rotate(v);
-  v.normalize();
-  return LatLon(math.asin(v.z), math.atan2(v.y, v.x));
+  final euler = quaternionToEulerAngles(q);
+  return eulerAnglesToLatLon(euler);
 }
 
-/// Fixed Quaternion.setFromTwoVectors from 'vector_math_64/quaternion.dart'. 0.0005 is too big?
+Quaternion latLonToQuaternion(LatLon latLon) {
+  final euler = latLonToEulerAngles(latLon);
+  return eulerAnglesToQuaternion(euler);
+}
+
+/// Fixed Quaternion.setFromTwoVectors from 'vector_math_64/quaternion.dart'.
 Quaternion quaternionFromTwoVectors(Vector3 a, Vector3 b) {
   final Vector3 v1 = a.normalized();
   final Vector3 v2 = b.normalized();
 
-  final double c = v1.dot(v2);
+  final double c = math.max(-1, math.min(1, v1.dot(v2)));
   double angle = math.acos(c);
   Vector3 axis = v1.cross(v2);
+  if (axis.length == 0) axis = Vector3(1.0, 0.0, 0.0);
 
-  if ((1.0 + c).abs() < 0.000000000000005) {
-    // c \approx -1 indicates 180 degree rotation
-    angle = math.pi;
-
-    // a and b are parallel in opposite directions. We need any
-    // vector as our rotation axis that is perpendicular.
-    // Find one by taking the cross product of v1 with an appropriate unit axis
-    if (v1.x > v1.y && v1.x > v1.z) {
-      // v1 points in a dominantly x direction, so don't cross with that axis
-      axis = v1.cross(new Vector3(0.0, 1.0, 0.0));
-    } else {
-      // Predominantly points in some other direction, so x-axis should be safe
-      axis = v1.cross(new Vector3(1.0, 0.0, 0.0));
-    }
-  } else if ((1.0 - c).abs() < 0.000000000000005) {
-    // c \approx 1 is 0-degree rotation, axis is arbitrary
-    angle = 0.0;
-    axis = new Vector3(1.0, 0.0, 0.0);
-  }
-
-  return Quaternion.axisAngle(axis.normalized(), angle);
+  return Quaternion.axisAngle(axis, angle);
 }
 
-/// Fixed Quaternion.axis from 'vector_math_64/quaternion.dart'. 0.0005 is too big?
-Vector3 axisFromQuaternion(Quaternion q) {
+/// Fixed Quaternion.axis from 'vector_math_64/quaternion.dart'.
+Vector3 quaternionAxis(Quaternion q) {
   final _qStorage = q.storage;
   final double den = 1.0 - (_qStorage[3] * _qStorage[3]);
-  if (den < 0.000000000000005) {
-    // 0-angle rotation, so axis does not matter
-    return new Vector3.zero();
-  }
+  if (den == 0) return new Vector3(1.0, 0.0, 0.0);
 
   final double scale = 1.0 / math.sqrt(den);
   return new Vector3(_qStorage[0] * scale, _qStorage[1] * scale, _qStorage[2] * scale);
+}
+
+/// Euler Angles
+EulerAngles quaternionToEulerAngles(Quaternion q) {
+  final _qStorage = q.storage;
+  final _x = _qStorage[0];
+  final _y = _qStorage[1];
+  final _z = _qStorage[2];
+  final _w = _qStorage[3];
+
+  final roll = math.atan2(2 * (_w * _z + _x * _y), 1 - 2 * (_z * _z + _x * _x));
+  final pitch = math.asin(math.max(-1, math.min(1, 2 * (_w * _x - _y * _z))));
+  final yaw = math.atan2(2 * (_w * _y + _z * _x), 1 - 2 * (_x * _x + _y * _y));
+
+  return EulerAngles(yaw, pitch, roll);
+}
+
+Quaternion eulerAnglesToQuaternion(EulerAngles euler) {
+  return Quaternion.euler(euler.yaw, euler.pitch, euler.roll);
+}
+
+LatLon eulerAnglesToLatLon(EulerAngles euler) {
+  return LatLon(-euler.pitch, -euler.yaw);
+}
+
+EulerAngles latLonToEulerAngles(LatLon latLon) {
+  return EulerAngles(-latLon.longitude, -latLon.latitude, 0);
+}
+
+class EulerAngles {
+  double yaw;
+  double pitch;
+  double roll;
+  EulerAngles(this.yaw, this.pitch, this.roll);
+  EulerAngles clone() => EulerAngles(yaw, pitch, roll);
+  void scale(double arg) {
+    yaw *= arg;
+    pitch *= arg;
+    roll *= arg;
+  }
+
+  void inRadians() => scale(math.pi / 180);
+  void inDegrees() => scale(180 / math.pi);
+  @override
+  String toString() => 'pitch:${pitch.toStringAsFixed(4)}, yaw:${yaw.toStringAsFixed(4)}, roll:${roll.toStringAsFixed(4)}';
 }
 
 class LatLon {
@@ -493,7 +519,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     //var q = Quaternion.fromTwoVectors(newCoord, oldCoord); // It seems some issues with this 'fromTwoVectors' function.
     var q = quaternionFromTwoVectors(newCoord, oldCoord);
     // final axis = q.axis; // It seems some issues with this 'axis' function.
-    final axis = axisFromQuaternion(q);
+    final axis = quaternionAxis(q);
     if (axis.x != 0 && axis.y != 0 && axis.z != 0) _lastRotationAxis = axis;
 
     q *= Quaternion.axisAngle(Vector3(0, 0, 1.0), -details.rotation);
