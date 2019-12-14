@@ -175,14 +175,12 @@ class FlutterEarth extends StatefulWidget {
     this.url,
     this.radius,
     this.subdivisions,
-    this.showAxis = false,
     this.onTileStart,
     this.onTileEnd,
   }) : super(key: key);
   final String url;
   final double radius;
   final int subdivisions;
-  final bool showAxis;
   final TileCallback onTileStart;
   final TileCallback onTileEnd;
 
@@ -211,8 +209,6 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
   Animation<double> riseAnimation;
   Animation<double> zoomAnimation;
   double _panCurveEnd = 0;
-
-  String _info = '';
 
   final double tileWidth = 256;
   final double tileHeight = 256;
@@ -361,62 +357,6 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     return Mesh(positions, textureCoordinates, triangleIndices, offset.dx, offset.dy, sumOfZ);
   }
 
-  void drawXYZAxis(Canvas canvas, Size size, [double length = 50, double width = 5]) {
-    // Draw X Y Z axis
-    final positions = List<Offset>();
-    final positions3 = List<Vector3>();
-    final height = math.sqrt(width * width * (1 - 0.25));
-    width /= 2;
-    positions3..add(Vector3(0, 0, 0));
-    positions3.add(Vector3(length, 0, 0));
-    positions3.add(Vector3(length, width, height));
-    positions3.add(Vector3(length, -width, height));
-    positions3.add(Vector3(0, length, 0));
-    positions3.add(Vector3(width, length, height));
-    positions3.add(Vector3(-width, length, height));
-    positions3.add(Vector3(0, 0, length));
-    positions3.add(Vector3(width, height, length));
-    positions3.add(Vector3(-width, height, length));
-    final triangles = [
-      Triangle(0, 1, 2),
-      Triangle(0, 1, 3),
-      Triangle(0, 2, 3),
-      Triangle(0, 4, 5),
-      Triangle(0, 4, 6),
-      Triangle(0, 5, 6),
-      Triangle(0, 7, 8),
-      Triangle(0, 7, 9),
-      Triangle(0, 8, 9),
-    ];
-
-    for (var v in positions3) {
-      quaternion.rotate(v);
-    }
-
-    triangles.sort((Triangle a, Triangle b) {
-      final az = positions3[a.point0].z + positions3[a.point1].z + positions3[a.point2].z;
-      final bz = positions3[b.point0].z + positions3[b.point1].z + positions3[b.point2].z;
-      return bz.compareTo(az);
-    });
-
-    for (var v in positions3) {
-      positions.add(Offset(v.x, v.y));
-    }
-
-    final indices = List<int>();
-    for (var t in triangles) {
-      indices..add(t.point0)..add(t.point1)..add(t.point2);
-    }
-
-    final vertices = ui.Vertices(
-      ui.VertexMode.triangleFan,
-      positions,
-      colors: [Colors.yellow, Colors.red, Colors.red, Colors.red, Colors.green, Colors.green, Colors.green, Colors.blue, Colors.blue, Colors.blue],
-      indices: indices,
-    );
-    if (widget.showAxis) canvas.drawVertices(vertices, BlendMode.src, Paint());
-  }
-
   void drawTiles(Canvas canvas, Size size) {
     final tiles = clipTiles(Rect.fromLTWH(0, 0, width, height), radius);
     final meshList = List<Mesh>();
@@ -478,18 +418,6 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
         canvas.drawVertices(vertices, BlendMode.src, paint);
       }
     }
-    drawXYZAxis(canvas, size);
-  }
-
-  void _updateInfo() {
-    final latLon = quaternionToLatLon(quaternion);
-    _info = 'lat:${(latLon.latitude * 180 / math.pi).toStringAsFixed(2)}, lon:${(latLon.longitude * 180 / math.pi).toStringAsFixed(2)}, zoom:${zoom.toStringAsFixed(2)}';
-    // final p = latLonToPoint(latLon.latitude, latLon.longitude);
-    // final l = pointToLatLon(p.dx, p.dy);
-    // final p2 = latLonToPoint(l.latitude, l.longitude);
-    // _info += '''
-
-    // $p, $l, $p2''';
   }
 
   void _handleScaleStart(ScaleStartDetails details) {
@@ -631,16 +559,9 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
           onScaleUpdate: _handleScaleUpdate,
           onScaleEnd: _handleScaleEnd,
           onDoubleTap: _handleDoubleTap,
-          child: Stack(
-            children: <Widget>[
-              Center(
-                child: CustomPaint(
-                  painter: SpherePainter(this),
-                  size: Size(constraints.maxWidth, constraints.maxHeight),
-                ),
-              ),
-              widget.showAxis ? Text(_info) : Container(),
-            ],
+          child: CustomPaint(
+            painter: SpherePainter(this),
+            size: Size(constraints.maxWidth, constraints.maxHeight),
           ),
         );
       },
@@ -655,11 +576,8 @@ class SpherePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // var stopwatch = Stopwatch()..start();
     canvas.translate(size.width / 2, size.height / 2);
     state.drawTiles(canvas, size);
-    // stopwatch.stop();
-    // print('paint() executed in ${stopwatch.elapsed.inMilliseconds}');
   }
 
   // We should repaint whenever the board changes, such as board.selected.
