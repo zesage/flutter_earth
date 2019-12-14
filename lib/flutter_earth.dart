@@ -198,15 +198,19 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
   Offset _lastFocalPoint;
   Quaternion _lastQuaternion;
   Vector3 _lastRotationAxis;
+  double _lastGestureScale;
+  double _lastGestureRatation;
+  int _lastGestureTime = 0;
 
   final double _radius = 256 / (2 * math.pi);
   double get radius => _radius * math.pow(2, zoom);
   int get zoomLevel => zoom.round().clamp(0, maxZoom);
   Quaternion quaternion = Quaternion.identity();
-  AnimationController rotationController;
-  Animation<double> rotationAnimation;
-  AnimationController zoomController;
+  AnimationController animController;
+  Animation<double> panAnimation;
+  Animation<double> riseAnimation;
   Animation<double> zoomAnimation;
+  double _panCurveEnd = 0;
 
   String _info = '';
 
@@ -489,20 +493,30 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
   }
 
   void _handleScaleStart(ScaleStartDetails details) {
-    rotationController.stop();
-    _lastZoom = zoom;
-    _lastFocalPoint = details.focalPoint;
+    animController.stop();
+    _lastZoom = null;
+    _lastFocalPoint = details.localFocalPoint;
     _lastQuaternion = quaternion;
   }
 
   void _handleScaleUpdate(ScaleUpdateDetails details) {
-    zoom = _lastZoom + math.log(details.scale) / math.ln2;
+    if (details.scale != 1.0 || details.rotation != 0.0) {
+      _lastGestureScale = details.scale;
+      _lastGestureRatation = details.rotation;
+      _lastGestureTime = DateTime.now().millisecondsSinceEpoch;
+    }
 
-    final RenderBox box = context.findRenderObject();
-    final oldCoord = canvasPointToVector3(box.globalToLocal(_lastFocalPoint));
-    final newCoord = canvasPointToVector3(box.globalToLocal(details.focalPoint));
+    if (_lastZoom == null) {
+      // fixed scaling error caused by ScaleUpdate delay
+      _lastZoom = zoom - math.log(details.scale) / math.ln2;
+    } else {
+      zoom = _lastZoom + math.log(details.scale) / math.ln2;
+    }
+
+    final Vector3 oldCoord = canvasPointToVector3(_lastFocalPoint);
+    final Vector3 newCoord = canvasPointToVector3(details.localFocalPoint);
     //var q = Quaternion.fromTwoVectors(newCoord, oldCoord); // It seems some issues with this 'fromTwoVectors' function.
-    var q = quaternionFromTwoVectors(newCoord, oldCoord);
+    Quaternion q = quaternionFromTwoVectors(newCoord, oldCoord);
     // final axis = q.axis; // It seems some issues with this 'axis' function.
     final axis = quaternionAxis(q);
     if (axis.x != 0 && axis.y != 0 && axis.z != 0) _lastRotationAxis = axis;
@@ -510,30 +524,65 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     q *= Quaternion.axisAngle(Vector3(0, 0, 1.0), -details.rotation);
     quaternion = _lastQuaternion * q; //quaternion A * B is not equal to B * A
 
-    _updateInfo();
     setState(() {});
   }
 
   void _handleScaleEnd(ScaleEndDetails details) {
     _lastQuaternion = quaternion;
-    final a = -600;
-    var v = details.velocity.pixelsPerSecond.distance * 0.3;
-    var t = (v / a).abs() * 1000;
-    var s = (v.sign * 0.5 * v * v / a) / radius;
-    rotationController.duration = Duration(milliseconds: t.toInt());
-    rotationAnimation = Tween<double>(begin: 0, end: -s).animate(CurveTween(curve: Curves.decelerate).animate(rotationController));
-    rotationController
-      ..value = 0
-      ..forward();
+    const double duration = 1000;
+    const double maxDistance = 4000;
+    final double distance = math.min(maxDistance, details.velocity.pixelsPerSecond.distance) / maxDistance;
+    if (distance == 0) return;
+
+    if (DateTime.now().millisecondsSinceEpoch - _lastGestureTime < 300) {
+      if (_lastGestureScale != 1.0 && (_lastGestureScale - 1.0).abs() > _lastGestureRatation.abs()) {
+        double radians = 1.5 * distance;
+        if (_lastGestureScale < 1.0) radians = -radians;
+        animController.duration = Duration(milliseconds: duration.toInt());
+        zoomAnimation = Tween<double>(begin: zoom, end: zoom + radians).animate(CurveTween(curve: Curves.decelerate).animate(animController));
+        panAnimation = null;
+        riseAnimation = null;
+        animController.reset();
+        animController.forward();
+        return;
+      } else if (_lastGestureRatation != 0) {
+        double radians = math.pi * distance;
+        if (_lastGestureRatation > 0) radians = -radians;
+        _lastRotationAxis = Vector3(0, 0, 1.0);
+        animController.duration = Duration(milliseconds: duration.toInt());
+        panAnimation = Tween<double>(begin: 0, end: radians).animate(CurveTween(curve: Curves.decelerate).animate(animController));
+        riseAnimation = null;
+        zoomAnimation = null;
+        animController.reset();
+        animController.forward();
+        return;
+      }
+    }
+
+    double radians = 1000 * distance / radius;
+    final Offset center = Offset(width / 2, height / 2);
+    final Vector3 oldCoord = canvasPointToVector3(center);
+    final Vector3 newCoord = canvasPointToVector3(center + details.velocity.pixelsPerSecond / distance);
+    Quaternion q = quaternionFromTwoVectors(newCoord, oldCoord);
+    final Vector3 axis = quaternionAxis(q);
+    if (axis.x != 0 && axis.y != 0 && axis.z != 0) _lastRotationAxis = axis;
+
+    animController.duration = Duration(milliseconds: duration.toInt());
+    panAnimation = Tween<double>(begin: 0, end: radians).animate(CurveTween(curve: Curves.decelerate).animate(animController));
+    riseAnimation = null;
+    zoomAnimation = null;
+    animController.reset();
+    animController.forward();
   }
 
   void _handleDoubleTap() {
     _lastZoom = zoom;
-    zoomController.duration = Duration(milliseconds: 600);
-    zoomAnimation = Tween<double>(begin: 0, end: 1).animate(zoomController);
-    zoomController
-      ..value = 0
-      ..forward();
+    animController.duration = Duration(milliseconds: 600);
+    zoomAnimation = Tween<double>(begin: zoom, end: zoom + 1.0).animate(CurveTween(curve: Curves.decelerate).animate(animController));
+    panAnimation = null;
+    riseAnimation = null;
+    animController.reset();
+    animController.forward();
   }
 
   @override
@@ -543,29 +592,31 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     for (var i = 0; i <= maxZoom; i++) tiles[i] = HashMap<int, Tile>();
 
     zoom = math.log(widget.radius / _radius) / math.ln2;
-    rotationController = AnimationController(vsync: this)
+
+    animController = AnimationController(vsync: this)
       ..addListener(() {
         setState(() {
-          final q = Quaternion.axisAngle(_lastRotationAxis, rotationAnimation.value);
-          quaternion = _lastQuaternion * q;
-        });
-      });
-    zoomController = AnimationController(vsync: this)
-      ..addListener(() {
-        setState(() {
-          if (_lastZoom + zoomAnimation.value > maxZoom)
-            zoom = maxZoom.toDouble();
-          else
-            zoom = _lastZoom + zoomAnimation.value;
-          _updateInfo();
+          if (!animController.isCompleted) {
+            if (panAnimation != null) {
+              final q = Quaternion.axisAngle(_lastRotationAxis, panAnimation.value);
+              quaternion = _lastQuaternion * q;
+            }
+            if (riseAnimation != null) {
+              if (animController.value < _panCurveEnd) zoom = riseAnimation.value;
+            }
+            if (zoomAnimation != null) {
+              if (animController.value >= _panCurveEnd) zoom = zoomAnimation.value;
+            }
+          } else {
+            _panCurveEnd = 0;
+          }
         });
       });
   }
 
   @override
   void dispose() {
-    rotationController.dispose();
-    zoomController.dispose();
+    animController.dispose();
     super.dispose();
   }
 
