@@ -132,21 +132,35 @@ class LatLon {
   String toString() => 'LatLon(${((latitude ?? 0) * 180 / math.pi).toStringAsFixed(2)}, ${((longitude ?? 0) * 180 / math.pi).toStringAsFixed(2)})';
 }
 
-class Triangle {
-  Triangle(this.point0, this.point1, this.point2);
-  int point0;
-  int point1;
-  int point2;
+class Polygon {
+  Polygon(this.vertex0, this.vertex1, this.vertex2, [this.sumOfZ = 0]);
+  int vertex0;
+  int vertex1;
+  int vertex2;
+  double sumOfZ;
 }
 
 class Mesh {
-  Mesh(this.positions, this.textureCoordinates, this.triangleIndices, this.x, this.y, this.sumOfZ);
-  List<Vector3> positions;
-  List<Offset> textureCoordinates;
-  List<Triangle> triangleIndices;
+  Mesh(int vertexCount, int faceCount) {
+    positions = Float32List(vertexCount * 2);
+    positionsZ = Float32List(vertexCount);
+    texcoords = Float32List(vertexCount * 2);
+    colors = Int32List(vertexCount);
+    indices = Uint16List(faceCount * 3);
+    this.vertexCount = 0;
+    this.indexCount = 0;
+  }
+  Float32List positions;
+  Float32List positionsZ;
+  Float32List texcoords;
+  Int32List colors;
+  Uint16List indices;
+  Image image;
+  int vertexCount;
+  int indexCount;
   double x;
   double y;
-  double sumOfZ;
+  double z;
 }
 
 enum TileStatus {
@@ -178,7 +192,6 @@ class FlutterEarth extends StatefulWidget {
     Key key,
     this.url,
     this.radius,
-    this.subdivisions,
     this.onMapCreated,
     this.onCameraMove,
     this.onTileStart,
@@ -186,7 +199,6 @@ class FlutterEarth extends StatefulWidget {
   }) : super(key: key);
   final String url;
   final double radius;
-  final int subdivisions;
   final TileCallback onTileStart;
   final TileCallback onTileEnd;
   final MapCreatedCallback onMapCreated;
@@ -245,11 +257,12 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
 
   Future<Tile> loadTileImage(Tile tile) async {
     tile.status = TileStatus.pending;
-    final url = widget.url.replaceAll('{z}', '${tile.z}').replaceAll('{x}', '${tile.x}').replaceAll('{y}', '${tile.y}');
     if (widget.onTileStart != null) widget.onTileStart(tile);
     if (tile.status == TileStatus.ready) return tile;
 
+    tile.status = TileStatus.fetching;
     final c = Completer<ui.Image>();
+    final url = widget.url.replaceAll('{z}', '${tile.z}').replaceAll('{x}', '${tile.x}').replaceAll('{y}', '${tile.y}');
     final networkImage = NetworkImage(url);
     final imageStream = networkImage.resolve(ImageConfiguration());
     imageStream.addListener(
@@ -319,47 +332,91 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     return list;
   }
 
-  Mesh buildTileMesh(Offset offset, double tileWidth, double tileHeight, int subdivisions, double mapWidth, double mapHeight, double radius) {
-    final positions = List<Vector3>();
-    final textureCoordinates = List<Offset>();
-    final triangleIndices = List<Triangle>();
-    var sumOfZ = 0.0;
+  Mesh buildTileMesh(double offsetX, double offsetY, double tileWidth, double tileHeight, int subdivisions, double mapWidth, double mapHeight, double radius) {
     //Rotate the tile from initial LatLon(-90, -90) to LatLon(0, 0) first.
     final q = Quaternion(-0.5, -0.5, 0.5, 0.5) * quaternion;
     //Use matrix rotation is more efficient.
     final matrix = q.asRotationMatrix()..invert();
+    double z = 0.0;
 
+    final int vertexCount = (subdivisions + 1) * (subdivisions + 1);
+    final int faceCount = subdivisions * subdivisions * 2;
+    final Mesh renderMesh = Mesh(vertexCount, faceCount);
+    final Float32List texcoords = renderMesh.texcoords;
+    final Float32List positions = renderMesh.positions;
+    final Float32List positionsZ = renderMesh.positionsZ;
+    int vertexIndex = 0;
+    int vertexZIndex = 0;
+    int texcoordIndex = 0;
     for (var j = 0; j <= subdivisions; j++) {
-      final y0 = (offset.dy + tileHeight * j / subdivisions) / mapHeight;
+      final y0 = (offsetY + tileHeight * j / subdivisions) / mapHeight;
       for (var i = 0; i <= subdivisions; i++) {
-        final x0 = (offset.dx + tileWidth * i / subdivisions) / mapWidth;
+        final x0 = (offsetX + tileWidth * i / subdivisions) / mapWidth;
         final latLon = pointToLatLon(x0, y0);
         final v = latLonToVector3(latLon)..scale(radius);
         v.applyMatrix3(matrix);
         // q.rotate(v);
-        positions.add(v);
-        textureCoordinates.add(Offset(tileWidth * i / subdivisions, tileHeight * j / subdivisions));
-        sumOfZ += v.z;
+        final Float64List storage4 = v.storage;
+        positions[vertexIndex] = storage4[0]; //v.x;
+        positions[vertexIndex + 1] = storage4[1]; //v.y;
+        positionsZ[vertexZIndex] = storage4[2]; //v.z;
+        vertexIndex += 2;
+        vertexZIndex++;
+
+        texcoords[texcoordIndex] = tileWidth * i / subdivisions;
+        texcoords[texcoordIndex + 1] = tileHeight * j / subdivisions;
+        texcoordIndex += 2;
       }
     }
+    renderMesh.vertexCount += vertexCount;
+
+    final List<Polygon> faces = List<Polygon>(faceCount);
+    int indexOffset = renderMesh.indexCount;
     for (var j = 0; j < subdivisions; j++) {
-      var k1 = j * (subdivisions + 1);
-      var k2 = k1 + subdivisions + 1;
+      int k1 = j * (subdivisions + 1);
+      int k2 = k1 + subdivisions + 1;
       for (var i = 0; i < subdivisions; i++) {
-        triangleIndices.add(Triangle(k1, k2, k1 + 1));
-        triangleIndices.add(Triangle(k1 + 1, k2, k2 + 1));
+        int k3 = k1 + 1;
+        int k4 = k2 + 1;
+        double sumOfZ = positionsZ[k1] + positionsZ[k2] + positionsZ[k3];
+        faces[indexOffset] = Polygon(k1, k2, k3, sumOfZ);
+        z += sumOfZ;
+        sumOfZ = positionsZ[k3] + positionsZ[k2] + positionsZ[k4];
+        faces[indexOffset + 1] = Polygon(k3, k2, k4, sumOfZ);
+        z += sumOfZ;
+        indexOffset += 2;
         k1++;
         k2++;
       }
     }
+    renderMesh.indexCount += faceCount;
 
-    triangleIndices.sort((Triangle a, Triangle b) {
-      final az = positions[a.point0].z + positions[a.point1].z + positions[a.point2].z;
-      final bz = positions[b.point0].z + positions[b.point1].z + positions[b.point2].z;
-      return bz.compareTo(az);
+    faces.sort((Polygon a, Polygon b) {
+      // return b.sumOfZ.compareTo(a.sumOfZ);
+      final double az = a.sumOfZ;
+      final double bz = b.sumOfZ;
+      if (bz > az) return 1;
+      if (bz < az) return -1;
+      return 0;
     });
 
-    return Mesh(positions, textureCoordinates, triangleIndices, offset.dx, offset.dy, sumOfZ);
+    // convert Polygon list to Uint16List
+    final int indexCount = faces.length;
+    final Uint16List renderIndices = renderMesh.indices;
+    for (int i = 0; i < indexCount; i++) {
+      final int index0 = i * 3;
+      final int index1 = index0 + 1;
+      final int index2 = index0 + 2;
+      final Polygon polygon = faces[i];
+      renderIndices[index0] = polygon.vertex0;
+      renderIndices[index1] = polygon.vertex1;
+      renderIndices[index2] = polygon.vertex2;
+    }
+
+    renderMesh.x = offsetX;
+    renderMesh.y = offsetY;
+    renderMesh.z = z;
+    return renderMesh;
   }
 
   void drawTiles(Canvas canvas, Size size) {
@@ -368,12 +425,14 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     final maxWidth = tileWidth * (1 << zoomLevel);
     final maxHeight = tileHeight * (1 << zoomLevel);
 
+    final int subdivisions = math.max(3, math.sqrt(5000 / math.pow(math.pow(2, zoomLevel), 2)).toInt());
     for (var t in tiles) {
       final mesh = buildTileMesh(
-        Offset(t.dx * tileWidth, t.dy * tileHeight),
+        t.dx * tileWidth,
+        t.dy * tileHeight,
         tileWidth,
         tileHeight,
-        widget.subdivisions,
+        subdivisions,
         maxWidth,
         maxHeight,
         radius,
@@ -382,38 +441,30 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     }
 
     meshList.sort((Mesh a, Mesh b) {
-      return b.sumOfZ.compareTo(a.sumOfZ);
+      return b.z.compareTo(a.z);
     });
 
     for (var mesh in meshList) {
-      final positions = List<Offset>();
-      final indices = List<int>();
-
-      for (var p in mesh.positions) {
-        positions.add(Offset(p.x, p.y));
-      }
-
-      for (var t in mesh.triangleIndices) {
-        indices..add(t.point0)..add(t.point1)..add(t.point2);
-      }
-
       final tile = getTile(mesh.x ~/ tileWidth, mesh.y ~/ tileHeight, zoomLevel);
       if (tile.status == TileStatus.ready) {
         //Is zoomed tile?
-        final zoomedTextureCoordinates = List<Offset>();
+        Float32List zoomedTexcoords;
         if (tile.z != zoomLevel) {
-          for (var p in mesh.textureCoordinates) {
-            var x = (mesh.x + p.dx) * math.pow(2, tile.z - zoomLevel) - tile.x * tileWidth;
-            var y = (mesh.y + p.dy) * math.pow(2, tile.z - zoomLevel) - tile.y * tileHeight;
-            zoomedTextureCoordinates.add(Offset(x, y));
+          zoomedTexcoords = Float32List(mesh.vertexCount * 2);
+          final Float32List texcoords = mesh.texcoords;
+          final int texcoordCount = texcoords.length;
+          final double scale = math.pow(2, tile.z - zoomLevel);
+          for (int i = 0; i < texcoordCount; i += 2) {
+            zoomedTexcoords[i] = (mesh.x + texcoords[i]) * scale - tile.x * tileWidth;
+            zoomedTexcoords[i + 1] = (mesh.y + texcoords[i + 1]) * scale - tile.y * tileHeight;
           }
         }
 
-        final vertices = ui.Vertices(
-          ui.VertexMode.triangles,
-          positions,
-          textureCoordinates: (tile.z != zoomLevel) ? zoomedTextureCoordinates : mesh.textureCoordinates,
-          indices: indices,
+        final vertices = ui.Vertices.raw(
+          VertexMode.triangles,
+          mesh.positions,
+          textureCoordinates: (tile.z != zoomLevel) ? zoomedTexcoords : mesh.texcoords,
+          indices: mesh.indices,
         );
 
         final paint = Paint();
@@ -472,7 +523,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
 
     if (DateTime.now().millisecondsSinceEpoch - _lastGestureTime < 300) {
       if (_lastGestureScale != 1.0 && (_lastGestureScale - 1.0).abs() > _lastGestureRatation.abs()) {
-        double radians = 1.5 * distance;
+        double radians = 2.0 * distance;
         if (_lastGestureScale < 1.0) radians = -radians;
         animController.duration = Duration(milliseconds: duration.toInt());
         zoomAnimation = Tween<double>(begin: zoom, end: zoom + radians).animate(CurveTween(curve: Curves.decelerate).animate(animController));
@@ -574,6 +625,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     for (var i = 0; i <= maxZoom; i++) tiles[i] = HashMap<int, Tile>();
 
     zoom = math.log(widget.radius / _radius) / math.ln2;
+    _lastRotationAxis = Vector3(0, 0, 1.0);
 
     animController = AnimationController(vsync: this)
       ..addListener(() {
