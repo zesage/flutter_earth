@@ -1,8 +1,8 @@
 name: flutter_earth
 description: A Flutter earth widget.
-version: 0.0.3
+version: 0.0.4
 author: Zebiao Hu <zesage@gmail.com>
-homepage: https://github.com/zesage/sphere
+homepage: https://github.com/zesage/flutter_earth
 
 environment:
   sdk: ">=2.1.0 <3.0.0"
@@ -10,7 +10,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
+  vector_math: any
+  
 dev_dependencies:
   flutter_test:
     sdk: flutter

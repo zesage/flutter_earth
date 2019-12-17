@@ -9,7 +9,7 @@ Add flutter_earth as a dependency in your pubspec.yaml file.
 
 ```yaml
 dependencies:
-  flutter_earth: ^0.0.3
+  flutter_earth: ^0.0.4
 ```
 
 ```dart
@@ -28,3 +28,7 @@ import 'package:flutter_earth/flutter_earth.dart';
     );
   }
 ```
+
+## Screenshot
+
+![screenshot](https://github.com/zesage/flutter_earth/raw/master/resource/screenshot.gif)

@@ -1,3 +1,7 @@
+## [0.0.4] - 12/17/2019
+
+- update dependencies
+
 ## [0.0.3] - 12/17/2019
 
 - add north and south pole textures
