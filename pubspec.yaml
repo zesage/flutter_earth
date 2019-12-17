@@ -1,6 +1,6 @@
 name: flutter_earth
 description: A Flutter earth widget.
-version: 0.0.1
+version: 0.0.3
 author: Zebiao Hu <zesage@gmail.com>
 homepage: https://github.com/zesage/sphere
 
@@ -51,3 +51,6 @@ flutter:
   #
   # For details regarding fonts in packages, see
   # https://flutter.dev/custom-fonts/#from-packages
+  assets:
+    - assets/google_map_north_pole.png
+    - assets/google_map_south_pole.png

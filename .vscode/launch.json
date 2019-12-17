@@ -5,9 +5,25 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Flutter",
+            "name": "Flutter profile",
             "request": "launch",
-            "type": "dart"
+            "type": "dart",
+            "program": "example/earth/lib/main.dart",
+            "flutterMode": "profile"
+        },
+        {
+            "name": "Flutter Debug",
+            "request": "launch",
+            "type": "dart",
+            "program": "example/earth/lib/main.dart",
+            "flutterMode": "debug"
+        },
+        {
+            "name": "Flutter release",
+            "request": "launch",
+            "type": "dart",
+            "program": "example/earth/lib/main.dart",
+            "flutterMode": "release"
         }
     ]
 }

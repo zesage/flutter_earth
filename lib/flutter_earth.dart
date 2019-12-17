@@ -3,10 +3,26 @@ library flutter_earth;
 import 'dart:collection';
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'dart:ui' as ui;
+import 'dart:ui';
 import 'dart:async';
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide Image;
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:vector_math/vector_math_64.dart' hide Colors;
+
+/// load an image from asset
+Future<Image> loadImageFromAsset(String fileName) {
+  final c = Completer<Image>();
+  rootBundle.load(fileName).then((data) {
+    instantiateImageCodec(data.buffer.asUint8List()).then((codec) {
+      codec.getNextFrame().then((frameInfo) {
+        c.complete(frameInfo.image);
+      });
+    });
+  }).catchError((error) {
+    c.completeError(error);
+  });
+  return c.future;
+}
 
 /// Mercator projection
 const double maxLatitude = 85.05112877980659 * math.pi / 180;
@@ -31,8 +47,9 @@ LatLon pointToLatLon(double x, double y) {
 
 /// Cartesian coordinate conversions
 Vector3 latLonToVector3(LatLon latLon) {
-  final x = math.cos(latLon.latitude) * math.cos(latLon.longitude);
-  final y = math.cos(latLon.latitude) * math.sin(latLon.longitude);
+  final cosLat = math.cos(latLon.latitude);
+  final x = cosLat * math.cos(latLon.longitude);
+  final y = cosLat * math.sin(latLon.longitude);
   final z = math.sin(latLon.latitude);
   return Vector3(x, y, z);
 }
@@ -129,7 +146,7 @@ class LatLon {
   LatLon inRadians() => LatLon(radians(latitude), radians(longitude));
   LatLon inDegrees() => LatLon(degrees(latitude), degrees(longitude));
   @override
-  String toString() => 'LatLon(${((latitude ?? 0) * 180 / math.pi).toStringAsFixed(2)}, ${((longitude ?? 0) * 180 / math.pi).toStringAsFixed(2)})';
+  String toString() => 'LatLon(${degrees(latitude ?? 0).toStringAsFixed(2)}, ${degrees(longitude ?? 0).toStringAsFixed(2)})';
 }
 
 class Polygon {
@@ -155,9 +172,9 @@ class Mesh {
   Float32List texcoords;
   Int32List colors;
   Uint16List indices;
-  Image image;
   int vertexCount;
   int indexCount;
+  Image texture;
   double x;
   double y;
   double z;
@@ -179,8 +196,8 @@ class Tile {
   /// zoom level
   int z;
   TileStatus status = TileStatus.clear;
-  ui.Image image;
-  Future<ui.Image> future;
+  Image image;
+  Future<Image> future;
 }
 
 typedef TileCallback = void Function(Tile tile);
@@ -192,6 +209,8 @@ class FlutterEarth extends StatefulWidget {
     Key key,
     this.url,
     this.radius,
+    this.maxVertexCount = 5000,
+    this.showPole = true,
     this.onMapCreated,
     this.onCameraMove,
     this.onTileStart,
@@ -199,6 +218,8 @@ class FlutterEarth extends StatefulWidget {
   }) : super(key: key);
   final String url;
   final double radius;
+  final int maxVertexCount;
+  final bool showPole;
   final TileCallback onTileStart;
   final TileCallback onTileEnd;
   final MapCreatedCallback onMapCreated;
@@ -223,7 +244,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
 
   final double _radius = 256 / (2 * math.pi);
   double get radius => _radius * math.pow(2, zoom);
-  int get zoomLevel => zoom.round().clamp(0, maxZoom);
+  int get zoomLevel => zoom.round().clamp(minZoom, maxZoom);
   LatLon get position => quaternionToLatLon(quaternion);
   EulerAngles get eulerAngles => quaternionToEulerAngles(quaternion);
 
@@ -236,8 +257,11 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
 
   final double tileWidth = 256;
   final double tileHeight = 256;
+  final int minZoom = 2;
   final int maxZoom = 21;
   List<HashMap<int, Tile>> tiles;
+  Image northPoleImage;
+  Image southPoleImage;
 
   Vector3 canvasPointToVector3(Offset point) {
     final x = point.dx - width / 2;
@@ -255,13 +279,27 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     return vector3ToLatLon(v);
   }
 
+  void clearCache() async {
+    final int currentZoom = zoomLevel;
+    for (int z = 4; z < tiles.length; z++) {
+      if (z != currentZoom) {
+        final values = tiles[z].values;
+        for (Tile t in values) {
+          t.status = TileStatus.clear;
+          t.image = null;
+          t.future = null;
+        }
+      }
+    }
+  }
+
   Future<Tile> loadTileImage(Tile tile) async {
     tile.status = TileStatus.pending;
     if (widget.onTileStart != null) widget.onTileStart(tile);
     if (tile.status == TileStatus.ready) return tile;
 
     tile.status = TileStatus.fetching;
-    final c = Completer<ui.Image>();
+    final c = Completer<Image>();
     final url = widget.url.replaceAll('{z}', '${tile.z}').replaceAll('{x}', '${tile.x}').replaceAll('{y}', '${tile.y}');
     final networkImage = NetworkImage(url);
     final imageStream = networkImage.resolve(ImageConfiguration());
@@ -274,6 +312,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     tile.status = TileStatus.ready;
     if (widget.onTileEnd != null) widget.onTileEnd(tile);
     setState(() {});
+
     return tile;
   }
 
@@ -303,15 +342,6 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
   List<Offset> clipTiles(Rect clipRect, double radius) {
     final list = List<Offset>();
     final scale = math.pow(2.0, zoomLevel);
-    if (zoomLevel <= 2) {
-      for (double y = 0; y < scale; y++) {
-        for (double x = 0; x < scale; x++) {
-          list.add(Offset(x, y));
-        }
-      }
-      return list;
-    }
-
     final observed = HashMap<int, int>();
     final lastKeys = List<int>(clipRect.width ~/ 10 + 1);
     for (var y = clipRect.top; y < clipRect.bottom; y += 10.0) {
@@ -320,6 +350,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
         final v = canvasPointToVector3(Offset(x, y));
         final latLon = canvasVector3ToLatLon(v);
         final point = latLonToPoint(latLon.latitude, latLon.longitude) * scale;
+        if (point.dx >= scale || point.dy >= scale) continue;
         final key = (point.dx.toInt() << 32) + point.dy.toInt();
         if ((i == 0 || lastKeys[i - 1] != key) && (lastKeys[i] != key) && !observed.containsKey(key)) {
           observed[key] = 0;
@@ -332,22 +363,137 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     return list;
   }
 
+  void initMeshTexture(Mesh mesh) {
+    final tile = getTile(mesh.x ~/ tileWidth, mesh.y ~/ tileHeight, zoomLevel);
+    if (tile.status == TileStatus.ready) {
+      //Is zoomed tile?
+      if (tile.z != zoomLevel) {
+        final Float32List texcoords = mesh.texcoords;
+        final int texcoordCount = texcoords.length;
+        final double scale = math.pow(2, tile.z - zoomLevel);
+        for (int i = 0; i < texcoordCount; i += 2) {
+          texcoords[i] = (mesh.x + texcoords[i]) * scale - tile.x * tileWidth;
+          texcoords[i + 1] = (mesh.y + texcoords[i + 1]) * scale - tile.y * tileHeight;
+        }
+      }
+      mesh.texture = tile.image;
+    }
+  }
+
+  Mesh initMeshFaces(Mesh mesh, int subdivisionsX, int subdivisionsY) {
+    final int faceCount = subdivisionsX * subdivisionsY * 2;
+    final List<Polygon> faces = List<Polygon>(faceCount);
+    final Float32List positionsZ = mesh.positionsZ;
+    int indexOffset = mesh.indexCount;
+    double z = 0.0;
+    for (var j = 0; j < subdivisionsY; j++) {
+      int k1 = j * (subdivisionsX + 1);
+      int k2 = k1 + subdivisionsX + 1;
+      for (var i = 0; i < subdivisionsX; i++) {
+        int k3 = k1 + 1;
+        int k4 = k2 + 1;
+        double sumOfZ = positionsZ[k1] + positionsZ[k2] + positionsZ[k3];
+        faces[indexOffset] = Polygon(k1, k2, k3, sumOfZ);
+        z += sumOfZ;
+        sumOfZ = positionsZ[k3] + positionsZ[k2] + positionsZ[k4];
+        faces[indexOffset + 1] = Polygon(k3, k2, k4, sumOfZ);
+        z += sumOfZ;
+        indexOffset += 2;
+        k1++;
+        k2++;
+      }
+    }
+    mesh.indexCount += faceCount;
+
+    faces.sort((Polygon a, Polygon b) {
+      // return b.sumOfZ.compareTo(a.sumOfZ);
+      final double az = a.sumOfZ;
+      final double bz = b.sumOfZ;
+      if (bz > az) return 1;
+      if (bz < az) return -1;
+      return 0;
+    });
+
+    // convert Polygon list to Uint16List
+    final int indexCount = faces.length;
+    final Uint16List indices = mesh.indices;
+    for (int i = 0; i < indexCount; i++) {
+      final int index0 = i * 3;
+      final int index1 = index0 + 1;
+      final int index2 = index0 + 2;
+      final Polygon polygon = faces[i];
+      indices[index0] = polygon.vertex0;
+      indices[index1] = polygon.vertex1;
+      indices[index2] = polygon.vertex2;
+    }
+
+    mesh.z = z;
+    return mesh;
+  }
+
+  Mesh buildPoleMesh(double startLatitude, double endLatitude, int subdivisions, Image image) {
+    //Rotate the tile from initial LatLon(-90, -90) to LatLon(0, 0) first.
+    final q = Quaternion(-0.5, -0.5, 0.5, 0.5) * quaternion;
+    //Use matrix rotation is more efficient.
+    final matrix = q.asRotationMatrix()..invert();
+
+    final int imageWidth = image?.width ?? 1;
+    final int imageHeight = image?.height ?? 1;
+    final int subdivisionsX = subdivisions * (imageWidth ~/ imageHeight);
+    final int vertexCount = (subdivisions + 1) * (subdivisionsX + 1);
+    final int faceCount = subdivisions * subdivisionsX * 2;
+    final Mesh mesh = Mesh(vertexCount, faceCount);
+    final Float32List texcoords = mesh.texcoords;
+    final Float32List positions = mesh.positions;
+    final Float32List positionsZ = mesh.positionsZ;
+    int vertexIndex = 0;
+    int vertexZIndex = 0;
+    int texcoordIndex = 0;
+
+    final double stepOfLat = (endLatitude - startLatitude) / subdivisions;
+    final double stepOfLon = 2 * math.pi / subdivisionsX;
+    for (int j = 0; j <= subdivisions; j++) {
+      final double y0 = startLatitude + stepOfLat * j;
+      for (int i = 0; i <= subdivisionsX; i++) {
+        final double x0 = -math.pi + i * stepOfLon;
+        final v = latLonToVector3(LatLon(y0, x0))..scale(radius);
+        v.applyMatrix3(matrix);
+        // q.rotate(v);
+        final Float64List storage4 = v.storage;
+        positions[vertexIndex] = storage4[0]; //v.x;
+        positions[vertexIndex + 1] = storage4[1]; //v.y;
+        positionsZ[vertexZIndex] = storage4[2]; //v.z;
+        vertexIndex += 2;
+        vertexZIndex++;
+
+        texcoords[texcoordIndex] = imageWidth * i / subdivisionsX;
+        texcoords[texcoordIndex + 1] = imageHeight * j / subdivisions;
+        texcoordIndex += 2;
+      }
+    }
+    mesh.vertexCount += vertexCount;
+    mesh.x = -1;
+    mesh.y = -1;
+    mesh.texture = image;
+    return initMeshFaces(mesh, subdivisionsX, subdivisions);
+  }
+
   Mesh buildTileMesh(double offsetX, double offsetY, double tileWidth, double tileHeight, int subdivisions, double mapWidth, double mapHeight, double radius) {
     //Rotate the tile from initial LatLon(-90, -90) to LatLon(0, 0) first.
     final q = Quaternion(-0.5, -0.5, 0.5, 0.5) * quaternion;
     //Use matrix rotation is more efficient.
     final matrix = q.asRotationMatrix()..invert();
-    double z = 0.0;
 
     final int vertexCount = (subdivisions + 1) * (subdivisions + 1);
     final int faceCount = subdivisions * subdivisions * 2;
-    final Mesh renderMesh = Mesh(vertexCount, faceCount);
-    final Float32List texcoords = renderMesh.texcoords;
-    final Float32List positions = renderMesh.positions;
-    final Float32List positionsZ = renderMesh.positionsZ;
+    final Mesh mesh = Mesh(vertexCount, faceCount);
+    final Float32List texcoords = mesh.texcoords;
+    final Float32List positions = mesh.positions;
+    final Float32List positionsZ = mesh.positionsZ;
     int vertexIndex = 0;
     int vertexZIndex = 0;
     int texcoordIndex = 0;
+
     for (var j = 0; j <= subdivisions; j++) {
       final y0 = (offsetY + tileHeight * j / subdivisions) / mapHeight;
       for (var i = 0; i <= subdivisions; i++) {
@@ -368,55 +514,10 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
         texcoordIndex += 2;
       }
     }
-    renderMesh.vertexCount += vertexCount;
-
-    final List<Polygon> faces = List<Polygon>(faceCount);
-    int indexOffset = renderMesh.indexCount;
-    for (var j = 0; j < subdivisions; j++) {
-      int k1 = j * (subdivisions + 1);
-      int k2 = k1 + subdivisions + 1;
-      for (var i = 0; i < subdivisions; i++) {
-        int k3 = k1 + 1;
-        int k4 = k2 + 1;
-        double sumOfZ = positionsZ[k1] + positionsZ[k2] + positionsZ[k3];
-        faces[indexOffset] = Polygon(k1, k2, k3, sumOfZ);
-        z += sumOfZ;
-        sumOfZ = positionsZ[k3] + positionsZ[k2] + positionsZ[k4];
-        faces[indexOffset + 1] = Polygon(k3, k2, k4, sumOfZ);
-        z += sumOfZ;
-        indexOffset += 2;
-        k1++;
-        k2++;
-      }
-    }
-    renderMesh.indexCount += faceCount;
-
-    faces.sort((Polygon a, Polygon b) {
-      // return b.sumOfZ.compareTo(a.sumOfZ);
-      final double az = a.sumOfZ;
-      final double bz = b.sumOfZ;
-      if (bz > az) return 1;
-      if (bz < az) return -1;
-      return 0;
-    });
-
-    // convert Polygon list to Uint16List
-    final int indexCount = faces.length;
-    final Uint16List renderIndices = renderMesh.indices;
-    for (int i = 0; i < indexCount; i++) {
-      final int index0 = i * 3;
-      final int index1 = index0 + 1;
-      final int index2 = index0 + 2;
-      final Polygon polygon = faces[i];
-      renderIndices[index0] = polygon.vertex0;
-      renderIndices[index1] = polygon.vertex1;
-      renderIndices[index2] = polygon.vertex2;
-    }
-
-    renderMesh.x = offsetX;
-    renderMesh.y = offsetY;
-    renderMesh.z = z;
-    return renderMesh;
+    mesh.vertexCount += vertexCount;
+    mesh.x = offsetX;
+    mesh.y = offsetY;
+    return initMeshFaces(mesh, subdivisions, subdivisions);
   }
 
   void drawTiles(Canvas canvas, Size size) {
@@ -425,7 +526,8 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     final maxWidth = tileWidth * (1 << zoomLevel);
     final maxHeight = tileHeight * (1 << zoomLevel);
 
-    final int subdivisions = math.max(3, math.sqrt(5000 / math.pow(math.pow(2, zoomLevel), 2)).toInt());
+    final tileCount = math.pow(math.pow(2, zoomLevel), 2);
+    final int subdivisions = math.max(2, math.sqrt(widget.maxVertexCount / tileCount).toInt());
     for (var t in tiles) {
       final mesh = buildTileMesh(
         t.dx * tileWidth,
@@ -437,7 +539,12 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
         maxHeight,
         radius,
       );
+      initMeshTexture(mesh);
       meshList.add(mesh);
+    }
+    if (widget.showPole) {
+      meshList..add(buildPoleMesh(math.pi / 2, radians(84), 5, northPoleImage));
+      meshList.add(buildPoleMesh(-radians(84), -math.pi / 2, 5, southPoleImage));
     }
 
     meshList.sort((Mesh a, Mesh b) {
@@ -445,34 +552,20 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     });
 
     for (var mesh in meshList) {
-      final tile = getTile(mesh.x ~/ tileWidth, mesh.y ~/ tileHeight, zoomLevel);
-      if (tile.status == TileStatus.ready) {
-        //Is zoomed tile?
-        Float32List zoomedTexcoords;
-        if (tile.z != zoomLevel) {
-          zoomedTexcoords = Float32List(mesh.vertexCount * 2);
-          final Float32List texcoords = mesh.texcoords;
-          final int texcoordCount = texcoords.length;
-          final double scale = math.pow(2, tile.z - zoomLevel);
-          for (int i = 0; i < texcoordCount; i += 2) {
-            zoomedTexcoords[i] = (mesh.x + texcoords[i]) * scale - tile.x * tileWidth;
-            zoomedTexcoords[i + 1] = (mesh.y + texcoords[i + 1]) * scale - tile.y * tileHeight;
-          }
-        }
+      final vertices = Vertices.raw(
+        VertexMode.triangles,
+        mesh.positions,
+        textureCoordinates: mesh.texcoords,
+        indices: mesh.indices,
+      );
 
-        final vertices = ui.Vertices.raw(
-          VertexMode.triangles,
-          mesh.positions,
-          textureCoordinates: (tile.z != zoomLevel) ? zoomedTexcoords : mesh.texcoords,
-          indices: mesh.indices,
-        );
-
-        final paint = Paint();
+      final paint = Paint();
+      if (mesh.texture != null) {
         Float64List matrix4 = new Matrix4.identity().storage;
-        final shader = ImageShader(tile.image, TileMode.mirror, TileMode.mirror, matrix4);
+        final shader = ImageShader(mesh.texture, TileMode.mirror, TileMode.mirror, matrix4);
         paint.shader = shader;
-        canvas.drawVertices(vertices, BlendMode.src, paint);
       }
+      canvas.drawVertices(vertices, BlendMode.src, paint);
     }
   }
 
@@ -523,7 +616,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
 
     if (DateTime.now().millisecondsSinceEpoch - _lastGestureTime < 300) {
       if (_lastGestureScale != 1.0 && (_lastGestureScale - 1.0).abs() > _lastGestureRatation.abs()) {
-        double radians = 2.0 * distance;
+        double radians = 3.0 * distance;
         if (_lastGestureScale < 1.0) radians = -radians;
         animController.duration = Duration(milliseconds: duration.toInt());
         zoomAnimation = Tween<double>(begin: zoom, end: zoom + radians).animate(CurveTween(curve: Curves.decelerate).animate(animController));
@@ -533,7 +626,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
         animController.forward();
         return;
       } else if (_lastGestureRatation != 0) {
-        double radians = math.pi * distance;
+        double radians = 2.0 * math.pi * distance;
         if (_lastGestureRatation > 0) radians = -radians;
         _lastRotationAxis = Vector3(0, 0, 1.0);
         animController.duration = Duration(milliseconds: duration.toInt());
@@ -652,6 +745,9 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     if (widget.onMapCreated != null) {
       widget.onMapCreated(_controller);
     }
+
+    loadImageFromAsset('packages/flutter_earth/assets/google_map_north_pole.png').then((Image value) => northPoleImage = value);
+    loadImageFromAsset('packages/flutter_earth/assets/google_map_south_pole.png').then((Image value) => southPoleImage = value);
   }
 
   @override
@@ -709,6 +805,8 @@ class FlutterEarthController {
   LatLon get position => _state.position;
   double get zoom => _state.zoom;
   bool get isAnimating => _state.animController.isAnimating;
+
+  void clearCache() => _state.clearCache();
 
   void animateCamera({LatLon newLatLon, double riseZoom, double fallZoom, double panSpeed = 10.0, double riseSpeed = 1.0, double fallSpeed = 1.0}) {
     _state.animateCamera(newLatLon: newLatLon, riseZoom: riseZoom, fallZoom: fallZoom, panSpeed: panSpeed, riseSpeed: riseSpeed, fallSpeed: fallSpeed);

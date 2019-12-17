@@ -33,13 +33,7 @@ class _MyHomePageState extends State<MyHomePage> {
   LatLon _position = LatLon(0, 0);
   String _cityName = '';
   dynamic _cityList;
-  int _subdivisions = 9;
-
-  void _incrementCounter() {
-    setState(() {
-      _subdivisions++;
-    });
-  }
+  Random _random = Random();
 
   void _onMapCreated(FlutterEarthController controller) {
     _controller = controller;
@@ -54,13 +48,13 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _moveToNextCity() {
-    if (!_controller.isAnimating && _cityList != null) {
-      final int index = Random().nextInt(_cityList.length);
+    if (_cityList != null) {
+      final int index = _random.nextInt(_cityList.length);
       final dynamic city = _cityList[index];
       final double lat = double.parse(city['latitude']);
       final double lon = double.parse(city['longitude']);
       _cityName = city['city'];
-      _controller.animateCamera(newLatLon: LatLon(lat, lon).inRadians(), riseZoom: 3.0, fallZoom: 11.0, panSpeed: 500, riseSpeed: 3, fallSpeed: 2);
+      _controller.animateCamera(newLatLon: LatLon(lat, lon).inRadians(), riseZoom: 2.2, fallZoom: 11.2, panSpeed: 500, riseSpeed: 3, fallSpeed: 2);
     }
   }
 
@@ -75,12 +69,7 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.title),
-      ),
       body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
         child: Stack(
           children: <Widget>[
             Column(
@@ -88,8 +77,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 Expanded(
                   child: FlutterEarth(
                     url: 'http://mt0.google.cn/vt/lyrs=y&hl=en&x={x}&y={y}&z={z}',
-                    radius: 160,
-                    subdivisions: _subdivisions % 10 + 1,
+                    radius: 180,
                     onMapCreated: _onMapCreated,
                     onCameraMove: _onCameraMove,
                   ),
@@ -97,31 +85,25 @@ class _MyHomePageState extends State<MyHomePage> {
               ],
             ),
             Column(
+              mainAxisAlignment: MainAxisAlignment.end,
               children: <Widget>[
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: <Widget>[
-                    Text(
-                      'lat:${_position.latitude.toStringAsFixed(2)} lon:${_position.longitude.toStringAsFixed(2)} zoom:${_zoom.toStringAsFixed(2)}',
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
+                Center(
+                  child: Text(
+                    'lat:${_position.latitude.toStringAsFixed(2)} lon:${_position.longitude.toStringAsFixed(2)} zoom:${_zoom.toStringAsFixed(2)}',
+                    textAlign: TextAlign.center,
+                  ),
                 ),
                 Text(_cityName),
-                IconButton(
-                    icon: Icon(Icons.location_searching),
-                    onPressed: () {
-                      _moveToNextCity();
-                    }),
               ],
             )
           ],
         ),
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
+        onPressed: _moveToNextCity,
         tooltip: 'Increment',
-        child: Icon(Icons.add),
+        mini: true,
+        child: Icon(Icons.location_searching),
       ), // This trailing comma makes auto-formatting nicer for build methods.
     );
   }
