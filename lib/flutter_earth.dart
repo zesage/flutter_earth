@@ -311,7 +311,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     tile.image = await c.future;
     tile.status = TileStatus.ready;
     if (widget.onTileEnd != null) widget.onTileEnd(tile);
-    setState(() {});
+    if(mounted) setState(() {});
 
     return tile;
   }
@@ -604,7 +604,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
     if (widget.onCameraMove != null) {
       widget.onCameraMove(position, zoom);
     }
-    setState(() {});
+    if(mounted) setState(() {});
   }
 
   void _handleScaleEnd(ScaleEndDetails details) {
@@ -722,7 +722,7 @@ class _FlutterEarthState extends State<FlutterEarth> with TickerProviderStateMix
 
     animController = AnimationController(vsync: this)
       ..addListener(() {
-        setState(() {
+        if(mounted) setState(() {
           if (!animController.isCompleted) {
             if (panAnimation != null) {
               final q = Quaternion.axisAngle(_lastRotationAxis, panAnimation.value);
