@@ -303,6 +303,9 @@ class _FlutterEarthState extends State<FlutterEarth>
   }
 
   Future<Tile> loadTileImage(Tile tile) async {
+    if (tile.status == TileStatus.error) {
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
     tile.status = TileStatus.pending;
     if (widget.onTileStart != null) widget.onTileStart!(tile);
     if (tile.status == TileStatus.ready) return tile;
@@ -319,14 +322,20 @@ class _FlutterEarthState extends State<FlutterEarth>
     } else {
       provider = widget.imageProvider!(url);
     }
-    final imageStream = provider.resolve(ImageConfiguration());
+    final imageStream = provider.resolve(const ImageConfiguration());
     imageStream.addListener(
       ImageStreamListener((ImageInfo imageInfo, bool synchronousCall) {
         c.complete(imageInfo.image);
+      }, onError: (exception, stackTrace) {
+        c.completeError(exception, stackTrace);
       }),
     );
-    tile.image = await c.future;
-    tile.status = TileStatus.ready;
+    try {
+      tile.image = await c.future;
+      tile.status = TileStatus.ready;
+    } catch (e) {
+      tile.status = TileStatus.error;
+    }
     if (widget.onTileEnd != null) widget.onTileEnd!(tile);
     if (mounted) setState(() {});
 
@@ -340,7 +349,7 @@ class _FlutterEarthState extends State<FlutterEarth>
       tile = Tile(x, y, z);
       tiles[z][key] = tile;
     }
-    if (tile.status == TileStatus.clear) {
+    if (tile.status == TileStatus.clear || tile.status == TileStatus.error) {
       loadTileImage(tile);
     }
 
