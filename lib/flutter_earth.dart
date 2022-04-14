@@ -195,7 +195,8 @@ enum TileStatus {
 }
 
 class Tile {
-  Tile(this.x, this.y, this.z, {this.image, this.future});
+  Tile(this.x, this.y, this.z,
+      {this.image, this.future, required this.imageProvider});
   int x;
   int y;
 
@@ -204,6 +205,36 @@ class Tile {
   TileStatus status = TileStatus.clear;
   Image? image;
   Future<Image>? future;
+  ImageProvider imageProvider;
+  ImageStream? _imageStream;
+  ImageStreamListener? _listener;
+
+  void _tileOnLoad(
+      ImageInfo imageInfo, bool synchronousCall, Completer<Image> completer) {
+    completer.complete(imageInfo.image);
+  }
+
+  Future<void> loadImage() async {
+    status = TileStatus.fetching;
+    final c = Completer<Image>();
+    final oldImageStream = _imageStream;
+    _imageStream = imageProvider.resolve(const ImageConfiguration());
+    if (_imageStream!.key != oldImageStream?.key) {
+      if (_listener != null) oldImageStream?.removeListener(_listener!);
+
+      _listener = ImageStreamListener((info, s) => _tileOnLoad(info, s, c),
+          onError: (exception, stackTrace) {
+        c.completeError(exception, stackTrace);
+      });
+      _imageStream!.addListener(_listener!);
+      try {
+        image = await c.future;
+        status = TileStatus.ready;
+      } catch (e) {
+        status = TileStatus.error;
+      }
+    }
+  }
 }
 
 typedef TileCallback = void Function(Tile tile);
@@ -309,33 +340,7 @@ class _FlutterEarthState extends State<FlutterEarth>
     tile.status = TileStatus.pending;
     if (widget.onTileStart != null) widget.onTileStart!(tile);
     if (tile.status == TileStatus.ready) return tile;
-
-    tile.status = TileStatus.fetching;
-    final c = Completer<Image>();
-    final url = widget.url
-        .replaceAll('{z}', '${tile.z}')
-        .replaceAll('{x}', '${tile.x}')
-        .replaceAll('{y}', '${tile.y}');
-    ImageProvider provider;
-    if (widget.imageProvider == null) {
-      provider = NetworkImage(url);
-    } else {
-      provider = widget.imageProvider!(url);
-    }
-    final imageStream = provider.resolve(const ImageConfiguration());
-    imageStream.addListener(
-      ImageStreamListener((ImageInfo imageInfo, bool synchronousCall) {
-        c.complete(imageInfo.image);
-      }, onError: (exception, stackTrace) {
-        c.completeError(exception, stackTrace);
-      }),
-    );
-    try {
-      tile.image = await c.future;
-      tile.status = TileStatus.ready;
-    } catch (e) {
-      tile.status = TileStatus.error;
-    }
+    await tile.loadImage();
     if (widget.onTileEnd != null) widget.onTileEnd!(tile);
     if (mounted) setState(() {});
 
@@ -346,7 +351,14 @@ class _FlutterEarthState extends State<FlutterEarth>
     final key = (x << 32) + y;
     var tile = tiles[z][key];
     if (tile == null) {
-      tile = Tile(x, y, z);
+      final url = widget.url
+          .replaceAll('{z}', '$z')
+          .replaceAll('{x}', '$x')
+          .replaceAll('{y}', '$y');
+      tile = Tile(x, y, z,
+          imageProvider: widget.imageProvider != null
+              ? widget.imageProvider!(url)
+              : NetworkImage(url));
       tiles[z][key] = tile;
     }
     if (tile.status == TileStatus.clear || tile.status == TileStatus.error) {
@@ -784,6 +796,7 @@ class _FlutterEarthState extends State<FlutterEarth>
   @override
   void initState() {
     super.initState();
+    PaintingBinding.instance!.imageCache!.maximumSizeBytes = 1024 * 1024 * 520;
     var _tiles = <HashMap<int, Tile>?>[]..length = (maxZoom + 1);
     for (var i = 0; i <= maxZoom; i++) {
       _tiles[i] = HashMap<int, Tile>();
