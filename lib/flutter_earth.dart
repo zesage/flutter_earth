@@ -224,7 +224,7 @@ class Tile {
 
       _listener = ImageStreamListener((info, s) => _tileOnLoad(info, s, c),
           onError: (exception, stackTrace) {
-        c.completeError(exception, stackTrace);
+        if (!c.isCompleted) c.completeError(exception, stackTrace);
       });
       _imageStream!.addListener(_listener!);
       try {
@@ -796,7 +796,8 @@ class _FlutterEarthState extends State<FlutterEarth>
   @override
   void initState() {
     super.initState();
-    PaintingBinding.instance!.imageCache!.maximumSizeBytes = 1024 * 1024 * 520;
+    PaintingBinding.instance!.imageCache!.maximumSizeBytes =
+        1024 * 1024 * 1024 * 1024;
     var _tiles = <HashMap<int, Tile>?>[]..length = (maxZoom + 1);
     for (var i = 0; i <= maxZoom; i++) {
       _tiles[i] = HashMap<int, Tile>();
